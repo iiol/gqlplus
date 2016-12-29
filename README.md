@@ -6,7 +6,7 @@ addition of command-line editing, history, table-name and optional
 column-name completion.  The editing is similar to tcsh and bash
 shells.
 
-https://travis-ci.org/ozcoder/gqlplus.svg?branch=modernise
+[![Travis CI Build Status](https://travis-ci.org/ozcoder/gqlplus.svg?branch=modernise)](https://travis-ci.org/ozcoder/gqlplus)
 
 ## BUILDING AND INSTALLING GQLPLUS
 
@@ -47,11 +47,11 @@ The executable gqlplus will be built in the current directory.
 If your operating system has a problem building like this then you will
 have to compile it the long way:
 ```
-aclocal
-autoconf
-automake --add-missing
-./configure
-make
+$ aclocal
+$ autoconf
+$ automake --add-missing
+$ ./configure
+$ make
 ```
 
 gqlplus uses the GNU Readline Library to achieve its
