@@ -6,6 +6,7 @@ addition of command-line editing, history, table-name and optional
 column-name completion.  The editing is similar to tcsh and bash
 shells.
 
+https://travis-ci.org/ozcoder/gqlplus.svg?branch=modernise
 
 ## BUILDING AND INSTALLING GQLPLUS
 
@@ -43,10 +44,21 @@ $ make
 ```
 The executable gqlplus will be built in the current directory. 
 
+If your operating system has a problem building like this then you will
+have to compile it the long way:
+```
+aclocal
+autoconf
+automake --add-missing
+./configure
+make
+```
+
 gqlplus uses the GNU Readline Library to achieve its
 functionality. Version 4.3 of the library is provided with gqlplus,
 therefore the distribution is self-contained (it does not depend on
-readline being installed on the system).
+readline being installed on the system). Note: By default it will use
+the system library.
 
 
 ## USAGE
