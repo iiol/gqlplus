@@ -1,6 +1,7 @@
-AC_INIT([gqlplus], [1.14])
+AC_INIT([gqlplus], [1.18],kernel01@gmail.com)
 AC_CONFIG_SRCDIR([gqlplus.c])
 AM_INIT_AUTOMAKE
+AC_PROG_MAKE_SET
 AC_PROG_CC
 AC_PROG_INSTALL
 AC_PROG_RANLIB
