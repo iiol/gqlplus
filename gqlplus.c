@@ -440,9 +440,11 @@ Copyright (C) 2004 Ljubomir J. Buturovic. All Rights Reserved.
 #include <unistd.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <signal.h>
 #include <fcntl.h>
@@ -457,7 +459,7 @@ Copyright (C) 2004 Ljubomir J. Buturovic. All Rights Reserved.
 #  define MAXPATHLEN 512
 #endif
 
-#define VERSION          "1.15"
+#define VERSION          "1.18"
 #define INIT_LENGTH      10
 #define MAX_LINE_LENGTH  100000
 #define INIT_LINE_LENGTH 100
@@ -872,6 +874,56 @@ static int check_password_prompt(char *str)
 }
 
 /*
+  Send your command to SQLPlus.
+  If it doesn't work exit with return code "ret" and inform user with "msg"
+*/
+int send_cmd(int outfd, int ret, char *cmd, char *msg)
+{
+  int status = write(outfd, cmd, strlen(cmd));
+
+  if (status == -1){
+    fprintf(stderr, "%s\n",msg);
+    exit(ret);
+  }
+
+  return(status);
+}
+
+/*
+  To avoid memory leaks build the error message.
+  Note: You need to free the message yourself after potentially using it.
+*/
+char *make_msg(const char *fmt, ...)
+{
+  int len;
+  char *buf = NULL;
+  va_list args;
+ 
+  va_start(args, fmt);
+  len = vsnprintf(buf, 0, fmt, args);
+  va_end(args);
+  len++;
+
+  buf = malloc(len * sizeof(char));
+  if (buf == NULL)
+  {
+    fprintf(stderr,"Out of memory when constructing error message.\n");
+    exit(-ENOMEM);
+  }
+
+  va_start(args, fmt);
+  len = vsnprintf(buf, len - 1, fmt, args);
+  va_end(args);
+  if (len < 0)
+  {
+    fprintf(stderr,"Out of memory when constructing error message.\n");
+    exit(-ENOMEM);
+  }
+
+  return(buf);
+}
+
+/*
    Get sqlplus output from `fd' and display it (*outstr is NULL)
    without prompt, or store it in *outstr. The prompt is returned and
    will be displayed later, by readline() (if we display it here, it
@@ -888,6 +940,7 @@ static char *get_sqlplus(int fd, char *line, char **outstr)
   int  capacity;
   int  ocapacity;
   int  pdiff;
+  int  status;
   char *lline;
   char *xtr;
   char *last_line;
@@ -980,7 +1033,9 @@ static char *get_sqlplus(int fd, char *line, char **outstr)
         if (!outstr)
         {
           if (plen > 0)
-            write(STDOUT_FILENO, lline, plen);
+          {
+            status = write(STDOUT_FILENO, lline, plen);
+          }
         }
         else
         {
@@ -1028,8 +1083,9 @@ static char *get_sqlplus(int fd, char *line, char **outstr)
     llen -= strlen(prompt);
     if (!outstr)
     {
-      if (llen > 0)
-        write(STDOUT_FILENO, lline, llen);
+      if (llen > 0){
+        status = write(STDOUT_FILENO, lline, llen);
+      }
     }
     else 
     {
@@ -1122,7 +1178,6 @@ static char *read_sqlplus(int fd, char *line)
    */
 static char *accept_cmd(char *cmd, int fdin, int fdout, char *sql_prompt, char *line)
 {
-  int  status;
   int  len;
   char *accept;
   char *rline;
@@ -1172,15 +1227,11 @@ static char *accept_cmd(char *cmd, int fdin, int fdout, char *sql_prompt, char *
     /*
        Send it to sqlplus.
        */
-    write(fdout, rline, strlen(rline));
+    send_cmd(fdout, -1, rline, "sqlplus terminated - exiting...");
     /*
        Terminate the user input sent to sqlplus.
        */
-    status = write(fdout, "\n", 1);
-    if (status == -1){
-      fprintf(stderr, "sqlplus terminated - exiting...\n");
-      exit(-1);
-    }
+    send_cmd(fdout, -1, "\n", "sqlplus terminated - exiting...");
     /*
        Now read the message sent from sqlplus, which should be the SQL
        prompt. We don't display it, since that will be done by the
@@ -1497,7 +1548,7 @@ static char *read_file(const char *fname, char *line)
       str = malloc((buf.st_size+1)*sizeof(char));
       if (str != (char *) 0){
         xtr = str;
-        while (fgets(line, MAX_LINE_LENGTH, fptr)){
+        while (NULL != fgets(line, MAX_LINE_LENGTH, fptr)){
           len = strlen(line);
           memcpy(xtr, line, len);
           xtr += len;
@@ -1506,6 +1557,10 @@ static char *read_file(const char *fname, char *line)
         *xtr = '\0';
       }
     }
+  }
+  else
+  {
+    fprintf(stderr,"Could not read %s\n",fname);
   }
   return str;
 }
@@ -1578,7 +1633,7 @@ static char **file_editor(FILE *fptr, char *line)
 {
   char **editor = (char **) 0;
 
-  while (fgets(line, MAX_LINE_LENGTH, fptr) && (editor == (char **) 0))
+  while ((NULL != fgets(line, MAX_LINE_LENGTH, fptr)) && (editor == (char **) 0))
     if ((line[0] != '#') && strstr(line, DEFINE_CMD) && (strstr(line, EDITOR)))
       editor = set_editor(line);
   fclose(fptr);
@@ -1669,7 +1724,8 @@ static void insert_line(int fdin, int fdout, char *xtr, char *ccmd, char *line)
   if (xtr && *xtr)
   {
     sprintf(ccmd, "i %s\n", xtr);
-    write(fdout, ccmd, strlen(ccmd));
+    send_cmd(fdout, -1, ccmd,
+              "sqlplus terminated while inserting line - exiting...");
     prompt = get_sqlplus(fdin, line, &str);
     free(prompt);
     free(str);
@@ -1703,9 +1759,11 @@ static void pause_cmd(int fdin, int fdout, char *line, char *sql_prompt, int fir
   int  flags;
   int  process_response;
   int  len;
+  char *err_msg;
   char *lx;
   char *response;
   char *sp;
+  char *tmp;
   char *prompt;
   char buffer[BUF_LEN];
 
@@ -1717,8 +1775,11 @@ static void pause_cmd(int fdin, int fdout, char *line, char *sql_prompt, int fir
   /*
      Send the command to sqlplus.
      */
-  write(fdout, line, strlen(line));
-  write(fdout, "\n", 1);
+  err_msg = make_msg("sqlplus terminated while sending cmd |%s| exiting.",line);
+  send_cmd(fdout, -1, line, err_msg);
+  free(err_msg);
+  send_cmd(fdout, -1, "\n", "sqlplus terminated while sending cmd - exiting.");
+
   if (first_flag)
     process_response = 1;
   else
@@ -1802,8 +1863,11 @@ static void pause_cmd(int fdin, int fdout, char *line, char *sql_prompt, int fir
         /*
            Get a line from keyboard and send it to sqlplus.
            */
-        fgets(lx, MAX_LINE_LENGTH, stdin);
-        write(fdout, lx, strlen(lx));
+        tmp = fgets(lx, MAX_LINE_LENGTH, stdin);
+	err_msg = make_msg("sqlplus terminated while sending cmd |%s| exiting.",
+                            lx);
+        send_cmd(fdout, -1, lx, err_msg);
+        free(err_msg);
       }
     }
   }
@@ -1869,7 +1933,8 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
        Get last SQL statement from sqlplus and put it in afiedt.buf, then
        open it in editor.
        */
-    write(fdout, LIST_CMD, strlen(LIST_CMD));
+    send_cmd(fdout, -1, LIST_CMD,
+              "sqlplus terminated while sending LIST cmd - exiting.");
     prompt = get_sqlplus(fdin, line, &str);
     /* TBD: afiedt.buf filename hardcoded. */
     rname = strdup(AFIEDT);
@@ -1987,7 +2052,9 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
               len -= 3;
               afiedt[len] = '\0';
             }
-            write(fdout, DEL_CMD, strlen(DEL_CMD));
+            send_cmd(fdout, -1, DEL_CMD,
+                      "sqlplus terminated while sending del cmd - exiting.");
+
             prompt = get_sqlplus(fdin, line, &str);
             free(prompt);
             free(str);
@@ -2007,7 +2074,9 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
                Last line, if not empty.
                */
             insert_line(fdin, fdout, xtr, ccmd, line);
-            write(fdout, LIST_CMD, strlen(LIST_CMD));
+            send_cmd(fdout, -1, LIST_CMD,
+                      "sqlplus terminated while sending list cmd - exiting.");
+
             prompt = get_sqlplus(fdin, line, (char **) 0);
             free(prompt);
             free(ccmd);
@@ -2029,7 +2098,9 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
     }
   }
   else
-    write(STDOUT_FILENO, NOTHING_TO_SAVE, strlen(NOTHING_TO_SAVE));
+  {
+    status = write(STDOUT_FILENO, NOTHING_TO_SAVE, strlen(NOTHING_TO_SAVE));
+  }
   free(rname);
   return status;
 }
@@ -2110,6 +2181,7 @@ static char **get_column_names(char *tablename, char *owner, int fdin, int fdout
 {
   int  len;
   char *ccmd = (char *) 0;
+  char *err_msg;
   char *str = (char *) 0;
   char *prompt = (char *) 0;
   char **columns = (char **) 0;
@@ -2124,7 +2196,12 @@ static char **get_column_names(char *tablename, char *owner, int fdin, int fdout
       sprintf(ccmd, "%s %s.%s\n", DESCRIBE, owner, tablename);
     else
       sprintf(ccmd, "%s %s\n", DESCRIBE, tablename);
-    write(fdout, ccmd, strlen(ccmd));
+
+    err_msg = make_msg("sqlplus terminated while sending cmd |%s| exiting.",
+                        ccmd);
+    send_cmd(fdout, -1, ccmd, err_msg);
+    free(err_msg);
+
     prompt = get_sqlplus(fdin, line, &str);
     free(prompt);
     columns = parse_columns(str);
@@ -2141,7 +2218,9 @@ static int get_pagesize(int fdin, int fdout, char *line)
   char *str;
   char *xtr;
 
-  write(fdout, PAGESIZE_CMD, strlen(PAGESIZE_CMD));
+  send_cmd(fdout, -1, PAGESIZE_CMD,
+            "sqlplus terminated while sending pagesize cmd - exiting.");
+
   get_sqlplus(fdin, line, &str);
   xtr = strchr(str, ' ')+1;
   len = strspn(xtr, DIGITS);
@@ -2248,6 +2327,7 @@ static struct table *get_names(char *str, int fdin, int fdout, int pagesize, cha
 static struct table *get_completion_names(int fdin, int fdout, char *line)
 {
   int  pagesize;
+  char *err_msg;
   char *str;
   char *ccmd;
   struct table *tables;
@@ -2257,14 +2337,18 @@ static struct table *get_completion_names(int fdin, int fdout, char *line)
   pagesize = get_pagesize(fdin, fdout, line);
   ccmd = malloc((strlen(SELECT_TABLES_1)+strlen(SELECT_TABLES_2)+1)*sizeof(char));
   sprintf(ccmd, "%s%s", SELECT_TABLES_1, SELECT_TABLES_2);
-  write(fdout, ccmd, strlen(ccmd));
+  err_msg = make_msg("sqlplus terminated while sending cmd |%s| exiting.",ccmd);
+  send_cmd(fdout, -1, ccmd, err_msg);
+  free(err_msg);
+
   get_sqlplus(fdin, line, &str);
   /* kehlet: ORA- error is likely because the database isn't open */
   if (!strstr(str, "ORA-")) {
     tables = get_names(str, fdin, fdout, pagesize, line);
   }
   free(str);
-  write(fdout, DEL_CMD, strlen(DEL_CMD));
+  send_cmd(fdout, -1, DEL_CMD,
+            "sqlplus terminated while sending del cmd - exiting.");
   get_sqlplus(fdin, line, &str);
   free(ccmd);
   return tables;
@@ -2506,7 +2590,7 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
   char *cmd;
   char *xtr;
   char *ptr;
-  char tmpdir[500]="";
+  char tmpdir[MAXPATHLEN]="";
   char *env_tmpdir;
   int  fd;
 
@@ -2651,8 +2735,10 @@ int main(int argc, char **argv)
   int    all_tables = 1; /* set to 0 if we cannot query or parse ALL_TABLES or ALL_VIEWS */
   int    pause_mode;
   int    pstat;
+  int    ret;
   char   *password = (char *) 0;
   char   *connect_string;
+  char   *err_msg;
   char   *path;
   char   *spath;
   char   *prompt;
@@ -2919,8 +3005,11 @@ int main(int argc, char **argv)
                   if (!strncmp(lline, SET_CMD, strlen(SET_CMD)) && xrgs && xrgs[1] &&
                       !strncmp(xrgs[1], SQLPROMPT_CMD, 4))
                   {
-                    write(fds1[1], rline, strlen(rline));
-                    write(fds1[1], "\n", 1);
+                    err_msg = make_msg("sqlplus terminated while sending cmd |%s| exiting.",rline);
+                    send_cmd(fds1[1], -1, rline, err_msg);
+                    free(err_msg);
+                    send_cmd(fds1[1], -1, "\n",
+                      "sqlplus terminated while sending cmd - exiting.");
                     sql_prompt = set_sql_prompt(fds2[0], line);
                     prompt = strdup(sql_prompt);
                   }
@@ -2955,7 +3044,10 @@ int main(int argc, char **argv)
                     else if (xrgs && xrgs[1] && !strncmp(lline, SET_CMD, strlen(SET_CMD)) &&
                         !strncmp(xrgs[1], PAUSE_CMD, 3))
                     {
-                      write(fds1[1], rline, strlen(rline));
+                      err_msg = make_msg("sqlplus terminated while sending cmd |%s| exiting.",rline);
+                      send_cmd(fds1[1], -1, rline, err_msg);
+                      free(err_msg);
+
                       if (xrgs[2] && !strcmp(xrgs[2], ON_CMD))
                         pause_mode = 1;
                       else
@@ -2976,26 +3068,33 @@ int main(int argc, char **argv)
                        */
                     else if (!strncmp(lline, CLEAR_CMD, 2) && nptr &&
                         !strncmp(nptr, SCREEN, strlen(SCREEN)))
-                      system("clear");
+                    {
+                      ret = system("clear");
+                    }
                     else if (!check_numeric_prompt(prompt) && (shellcmd = get_shellcmd(oline)))
                     {
-                      system(shellcmd);
+                      ret = system(shellcmd);
                       fprintf(stdout, "\n");
                       fflush(stdout);
                     }else {
                       if (check_password_prompt(prompt)){
                         status = tcsetattr(STDIN_FILENO, TCSAFLUSH, &save_termios);
                       }
-                      write(fds1[1], rline, strlen(rline));
+
+                      err_msg = make_msg("sqlplus terminated while sending cmd |%s| exiting.",rline);
+                      send_cmd(fds1[1], -1, rline, err_msg);
+                      free(err_msg);
+
                       if (strstr(lline, DEFINE_CMD) && (strstr(lline, EDITOR))){
                         editor = set_editor(lline);
                       }
                     }
                     free(prompt);
                     if (!quit_sqlplus){
-                      status = write(fds1[1], "\n", 1);
+                      status = send_cmd(fds1[1], -1, "\n",
+                        "sqlplus terminated - exiting... :(");
+/* HERE */
                       if (status == -1){
-                        fprintf(stderr, "sqlplus terminated - exiting... :( \n");
                         quit_sqlplus = 1;
                       }else{
 

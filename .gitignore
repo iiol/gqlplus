@@ -6,3 +6,4 @@ config.log
 config.status
 gqlplus
 gqlplus.o
+cov-int
