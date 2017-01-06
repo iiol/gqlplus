@@ -559,13 +559,17 @@ Copyright (C) 2004 Ljubomir J. Buturovic. All Rights Reserved.
 
 void save_history(void)
 {
+  int ret;
+
   if (history_list() == NULL)
     /* If history is of length 0 (because set as is or slave is not executable) */
     unlink(histname);
   else {
     write_history(histname);
-    chmod(histname, 0600);
-    printf("\nSession history saved to: %s\n", histname);
+    ret = chmod(histname, 0600);
+    if (ret < 0) {
+      fprintf(stderr,"Problem with chmod on %s\n",histname);
+    }
   }
 }
 
@@ -1691,16 +1695,18 @@ static char **file_set_editor(char *line)
   if (!found)
   {
     env_sqlpath = getenv("SQLPATH");
-    if (11 + strlen(env_sqlpath) > (2 * MAXPATHLEN))
-    {
-      if (strlen(env_sqlpath) < (10 * MAXPATHLEN))
+    if (env_sqlpath) {
+      if (11 + strlen(env_sqlpath) > (2 * MAXPATHLEN))
       {
-        path = realloc(path,11 + strlen(env_sqlpath));
-      }
-      else
-      {
-        fprintf(stderr,"Environment variable SQLPATH is too long - exiting\n");
-        exit(-2);
+        if (strlen(env_sqlpath) < (10 * MAXPATHLEN))
+        {
+          path = realloc(path,11 + strlen(env_sqlpath));
+        }
+        else
+        {
+          fprintf(stderr,"Environment variable SQLPATH is too long - exiting\n");
+          exit(-2);
+        }
       }
     }
     sqlpath = str_tokenize(getenv("SQLPATH"), ":");
@@ -1800,6 +1806,7 @@ static void pause_cmd(int fdin, int fdout, char *line, char *sql_prompt, int fir
   int  flags;
   int  process_response;
   int  len;
+  int  ret;
   char *err_msg;
   char *lx;
   char *response;
@@ -1812,7 +1819,12 @@ static void pause_cmd(int fdin, int fdout, char *line, char *sql_prompt, int fir
      Get sqlplus output without blocking.
      */
   flags = fcntl(fdin, F_GETFL, 0);
-  fcntl(fdin, F_SETFL, (flags | O_NDELAY));
+  ret = fcntl(fdin, F_SETFL, (flags | O_NDELAY));
+  if (ret < 0)
+  {
+    fprintf(stderr,"Problem setting non blocking on sqlplus\n");
+    perror("Going to run pause command");
+  }
   /*
      Send the command to sqlplus.
      */
@@ -1917,7 +1929,12 @@ static void pause_cmd(int fdin, int fdout, char *line, char *sql_prompt, int fir
   /*
      Reset pipe from sqlplus to O_NDELAY.
      */
-  fcntl(fdin, F_SETFL, (flags &~ O_NDELAY));
+  ret = fcntl(fdin, F_SETFL, (flags &~ O_NDELAY));
+  if (ret < 0)
+  {
+    fprintf(stderr,"Problem setting reseting blocking on sqlplus\n");
+    perror("Ran pause command");
+  }
   free(lx);
   free(response);
 }
@@ -2143,6 +2160,8 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
     status = write(STDOUT_FILENO, NOTHING_TO_SAVE, strlen(NOTHING_TO_SAVE));
   }
   free(rname);
+  if (str)
+    free(str);
   return status;
 }
 
@@ -2372,6 +2391,7 @@ static struct table *get_completion_names(int fdin, int fdout, char *line)
   char *err_msg;
   char *str;
   char *ccmd;
+  char *prompt;
   struct table *tables;
 
   str = (char *) 0;
@@ -2383,17 +2403,19 @@ static struct table *get_completion_names(int fdin, int fdout, char *line)
   send_cmd(fdout, -1, ccmd, err_msg);
   free(err_msg);
 
-  get_sqlplus(fdin, line, &str);
+  prompt = get_sqlplus(fdin, line, &str);
   /* kehlet: ORA- error is likely because the database isn't open */
   if (!strstr(str, "ORA-")) {
     tables = get_names(str, fdin, fdout, pagesize, line);
   }
   free(str);
+  free(prompt);
   send_cmd(fdout, -1, DEL_CMD,
             "sqlplus terminated while sending del cmd - exiting.");
-  get_sqlplus(fdin, line, &str);
+  prompt = get_sqlplus(fdin, line, &str);
   free(ccmd);
   free(str);
+  free(prompt);
   return tables;
 }
 
@@ -2646,6 +2668,7 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
   char tmpdir[MAXPATHLEN]="";
   char *env_tmpdir;
   int  fd;
+  int  ret;
 
   if (connect_string){
     if ((env_tmpdir=getenv("TMPDIR"))){
@@ -2675,7 +2698,10 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
     strcat(tmpdir, "/gqlplus.XXXXXX");
     //printf("tmpdir: %s\n", tmpdir);
     fd = mkstemp(tmpdir);
-    /* unlink(tmpdir); */
+    /* ret = unlink(tmpdir);
+      if (ret < 0)
+        fprintf(stderr,"Could not unlink %s\n",tmpdir);
+    */
     if (fd < 0) {
         fprintf(stderr, "%s: %s\n", tmpdir, strerror(errno));
         return (NULL);
@@ -2688,7 +2714,9 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
     *status = system(cmd);
     if (!*status){
       xtr = read_file(tmpdir, line);
-      unlink(tmpdir);
+      ret = unlink(tmpdir);
+      if (ret < 0)
+        fprintf(stderr,"Could not unlink %s\n",tmpdir);
       
          //Get the last line.
       extra = strstr(xtr, SQLPROMPT);
@@ -2758,6 +2786,7 @@ static void get_final_sqlplus(int fdin)
   int  result;
   int  capacity;
   int  llen;
+  int  ret;
   char *response;
   char buffer[BUF_LEN];
 
@@ -2770,7 +2799,12 @@ static void get_final_sqlplus(int fdin)
      Get sqlplus output without blocking.
      */
   flags = fcntl(fdin, F_GETFL, 0);
-  fcntl(fdin, F_SETFL, (flags | O_NDELAY));
+  ret = fcntl(fdin, F_SETFL, (flags | O_NDELAY));
+  if (ret < 0)
+  {
+    fprintf(stderr,"Problem setting non blocking on sqlplus\n");
+    perror(NULL);
+  }
   result = read(fdin, buffer, BUF_LEN);
   if (result > 0)
   {
