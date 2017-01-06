@@ -628,6 +628,7 @@ int startsWith(char* szOrg, const char* szPrefix)
     if (strstr(szOrgTrimmed, szPrefix) == szOrgTrimmed){
       iMatch = 1;
     }
+    free(szOrgTrimmed);
   }
   return iMatch;
 }
@@ -652,6 +653,7 @@ int matchCommand(char* szOrg, char* szPrefix, char* szCmd)
       char* szRemaining = szOrgTrimmed + strlen(szPrefix);
       iMatch = startsWith(szRemaining, szCmd);
     }
+    free(szOrgTrimmed);
   }
 
   return iMatch;
@@ -1218,6 +1220,7 @@ static char *accept_cmd(char *cmd, int fdin, int fdout, char *sql_prompt, char *
     printf("%s", fline);
     fflush(stdout);
     free(fline);
+    free(accept);
     prompt = strdup(sql_prompt);
   }else{
     /*
@@ -1407,7 +1410,17 @@ static char *search_exe(char *exe)
     {
       mode = check_mode(buf.st_mode);
       if (mode)
+      {
         path = lpath;
+      }
+      else
+      {
+        free(lpath);
+      }
+    }
+    else
+    {
+      free(lpath);
     }
   }
   return path;
@@ -1552,10 +1565,10 @@ static char *read_file(const char *fname, char *line)
           memcpy(xtr, line, len);
           xtr += len;
         }
-        fclose(fptr);
         *xtr = '\0';
       }
     }
+    fclose(fptr);
   }
   else
   {
@@ -1654,11 +1667,12 @@ static char **file_set_editor(char *line)
   int  cntr;
   char *path;
   char **editor = (char **) 0;
+  char *env_sqlpath;
   char **sqlpath;
   char *oracle_home;
   FILE *fptr;
 
-  path = malloc(1024);
+  path = malloc(MAXPATHLEN * 2);
   /*
      Check local directory first.
      */
@@ -1674,37 +1688,65 @@ static char **file_set_editor(char *line)
      If login.sql is not found in the local directory, check SQLPATH
      directories.
      */
-  sqlpath = str_tokenize(getenv("SQLPATH"), ":");
-  if (sqlpath)
-  {
-    cntr = 0;
-    while (!found && sqlpath[cntr])
-    {
-      sprintf(path, "%s/login.sql", sqlpath[cntr]);
-      cntr++;
-      fptr = fopen(path, "r");
-      if (fptr)
-      {
-        found = 1;
-        editor = file_editor(fptr, line);
-      }
-    }
-    str_free(sqlpath);
-  }
   if (!found)
   {
-    /*
-       login.sql not found. Check ${ORACLE_HOME}/sqlplus/admin/gqlplus.sql.
-       */
-    oracle_home = getenv("ORACLE_HOME");
-    if (oracle_home)
+    env_sqlpath = getenv("SQLPATH");
+    if (11 + strlen(env_sqlpath) > (2 * MAXPATHLEN))
     {
-      sprintf(path, "%s/sqlplus/admin/glogin.sql", oracle_home);
-      fptr = fopen(path, "r");
-      if (fptr)
+      if (strlen(env_sqlpath) < (10 * MAXPATHLEN))
       {
-        found = 1;
-        editor = file_editor(fptr, line);
+        path = realloc(path,11 + strlen(env_sqlpath));
+      }
+      else
+      {
+        fprintf(stderr,"Environment variable SQLPATH is too long - exiting\n");
+        exit(-2);
+      }
+    }
+    sqlpath = str_tokenize(getenv("SQLPATH"), ":");
+    if (sqlpath)
+    {
+      cntr = 0;
+      while (!found && sqlpath[cntr])
+      {
+        sprintf(path, "%s/login.sql", sqlpath[cntr]);
+        cntr++;
+        fptr = fopen(path, "r");
+        if (fptr)
+        {
+          found = 1;
+          editor = file_editor(fptr, line);
+        }
+      }
+      str_free(sqlpath);
+    }
+    if (!found)
+    {
+      /*
+         login.sql not found. Check ${ORACLE_HOME}/sqlplus/admin/gqlplus.sql.
+         */
+      oracle_home = getenv("ORACLE_HOME");
+      if (oracle_home)
+      {
+        if (26 + strlen(oracle_home) > (2 * MAXPATHLEN))
+        {
+          if (strlen(oracle_home) < (10 * MAXPATHLEN))
+          {
+            path = realloc(path,26 + strlen(oracle_home));
+          }
+          else
+          {
+            fprintf(stderr,"Environment variable ORACLE_HOME is too long - exiting\n");
+            exit(-2);
+          }
+        }
+        sprintf(path, "%s/sqlplus/admin/glogin.sql", oracle_home);
+        fptr = fopen(path, "r");
+        if (fptr)
+        {
+          found = 1;
+          editor = file_editor(fptr, line);
+        }
       }
     }
   }
@@ -1785,11 +1827,11 @@ static void pause_cmd(int fdin, int fdout, char *line, char *sql_prompt, int fir
     process_response = 0;
   lx = malloc((MAX_LINE_LENGTH+1)*sizeof(char));
   response = malloc((INIT_LINE_LENGTH+1)*sizeof(char));
-  response[0] = '\0';
   capacity = INIT_LINE_LENGTH;
   llen = 0;
   if (lx && response)
   {
+    response[0] = '\0';
     done = 0;
     while (!done)
     {
@@ -1906,7 +1948,7 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
   char  *newline;
   char  **xrgs = (char **) 0;
   char  **enx = (char **) 0;
-  FILE  *fptr;
+  FILE  *fptr = NULL;
 
   status = 0;
   str = (char *) 0;
@@ -1935,6 +1977,7 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
     send_cmd(fdout, -1, LIST_CMD,
               "sqlplus terminated while sending LIST cmd - exiting.");
     prompt = get_sqlplus(fdin, line, &str);
+    free(prompt);
     /* TBD: afiedt.buf filename hardcoded. */
     rname = strdup(AFIEDT);
   }
@@ -1964,7 +2007,6 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
       if (!status)
       {
         free(str);
-        free(prompt);
         path = editor[0];
         xc = 0;
         while (editor[xc++] != (char *) 0);
@@ -2021,7 +2063,7 @@ static int edit(int fdin, int fdout, char *line, char **editor, char *fname)
         { 
           if (execve(path, xrgs, enx) < 0) 
           {
-            str = malloc(100);
+            str = malloc(strlen(path) + 19);
             sprintf(str, "execve() failure; %s", path);
             perror(str);
             _exit(-1);
@@ -2173,6 +2215,7 @@ static char **parse_columns(char *str)
       }
     }
   }
+  free(tokens);
   return columns;
 }
 
@@ -2216,16 +2259,19 @@ static int get_pagesize(int fdin, int fdout, char *line)
   int  len;
   char *str;
   char *xtr;
+  char *prompt = (char *) 0;
 
   send_cmd(fdout, -1, PAGESIZE_CMD,
             "sqlplus terminated while sending pagesize cmd - exiting.");
 
-  get_sqlplus(fdin, line, &str);
+  prompt = get_sqlplus(fdin, line, &str);
   xtr = strchr(str, ' ')+1;
   len = strspn(xtr, DIGITS);
   xtr[len] = '\0';
   pagesize = atoi(xtr);
   free(str);
+  free(prompt);
+
   return pagesize;
 }
 
@@ -2310,6 +2356,7 @@ static struct table *get_names(char *str, int fdin, int fdout, int pagesize, cha
       }
     }
   }
+  free(toks);
   if (fptr)
     fclose(fptr);
   return tables;
@@ -2346,6 +2393,7 @@ static struct table *get_completion_names(int fdin, int fdout, char *line)
             "sqlplus terminated while sending del cmd - exiting.");
   get_sqlplus(fdin, line, &str);
   free(ccmd);
+  free(str);
   return tables;
 }
 
@@ -2513,15 +2561,22 @@ static char *get_connect_string(int argc, char **argv)
       if (strchr(str, '/'))
       {
         if (strchr(str, '@'))
+        {
           connect_string = strdup(str);
+          break;
+        }
         else if (sid != (char *) 0)
         {
           connect_string = malloc(strlen(str)+strlen(sid)+2);
           sprintf(connect_string, "%s@%s", str, sid);
+          break;
         }
       }
       else
+      {
+        free(username);
         username = strdup(str);
+      }
     }
   }
   return connect_string;
@@ -2540,7 +2595,9 @@ static char *build_connect_string(char *user, char *password)
   if (strchr(user, '@'))
   {
     if (strchr(user, '/'))
+    {
       connect_string = strdup(user);
+    }
     else if ((password != (char *) 0))
     {
       tokens = str_tokenize(user, "@");
@@ -2584,6 +2641,7 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
   char *sqlprompt = (char *) 0;
   char *cmd;
   char *xtr;
+  char *extra;
   char *ptr;
   char tmpdir[MAXPATHLEN]="";
   char *env_tmpdir;
@@ -2591,9 +2649,23 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
 
   if (connect_string){
     if ((env_tmpdir=getenv("TMPDIR"))){
-    }else if ((env_tmpdir=getenv("TEMPDIR"))){
-    }else{
-      env_tmpdir=getenv("TEMP");
+        /* length "/gqlplus.XXXXXX" = 16 */
+      if (16 + strlen(env_tmpdir) > MAXPATHLEN) {
+        fprintf(stderr,"Environment variable TMPDIR too long\n");
+        env_tmpdir = (char *) 0;
+      }
+    }
+    if (!env_tmpdir && (env_tmpdir=getenv("TEMPDIR"))){
+      if (16 + strlen(env_tmpdir) > MAXPATHLEN) {
+        fprintf(stderr,"Environment variable TEMPDIR too long\n");
+        env_tmpdir = (char *) 0;
+      }
+    }
+    if (!env_tmpdir && (env_tmpdir=getenv("TEMP"))){
+      if (16 + strlen(env_tmpdir) > MAXPATHLEN) {
+        fprintf(stderr,"Environment variable TEMP too long\n");
+        env_tmpdir = (char *) 0;
+      }
     }
     if (env_tmpdir){
       strcpy(tmpdir, env_tmpdir);
@@ -2603,10 +2675,9 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
     strcat(tmpdir, "/gqlplus.XXXXXX");
     //printf("tmpdir: %s\n", tmpdir);
     fd = mkstemp(tmpdir);
-    unlink(tmpdir);
+    /* unlink(tmpdir); */
     if (fd < 0) {
         fprintf(stderr, "%s: %s\n", tmpdir, strerror(errno));
-        close(fd);
         return (NULL);
     }
     *status = 0;
@@ -2616,21 +2687,20 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
     /*printf("cmd: `%s'\n", cmd);*/
     *status = system(cmd);
     if (!*status){
-      free(cmd);
       xtr = read_file(tmpdir, line);
       unlink(tmpdir);
       
          //Get the last line.
-      xtr = strstr(xtr, SQLPROMPT);
-      if (xtr){
-        if (!strcmp(xtr, "\n") || strncmp(xtr, SQLPROMPT, strlen(SQLPROMPT)))
+      extra = strstr(xtr, SQLPROMPT);
+      if (extra){
+        if (!strcmp(extra, "\n") || strncmp(extra, SQLPROMPT, strlen(SQLPROMPT)))
           sqlprompt = old_prompt;
         else{
             /*
              Is this user using (g)login.sql? And if so, is she
              setting sqlprompt?
              */
-          ptr = strchr(xtr, '"');
+          ptr = strchr(extra, '"');
           ptr++;
           len = strcspn(ptr, "\"");
           sqlprompt = malloc(len+1);
@@ -2638,7 +2708,10 @@ static char *get_sql_prompt(char *old_prompt, char *sqlplus, char *connect_strin
           sqlprompt[len] = '\0';
         }
       }
+      free(xtr);
     }
+
+    free(cmd);
   }
   return sqlprompt;
 }
@@ -2707,6 +2780,7 @@ static void get_final_sqlplus(int fdin)
     response[llen] = '\0';
   }
   printf("%s", response);
+  free(response);
 }
 
 /*
@@ -2835,6 +2909,7 @@ int main(int argc, char **argv)
         {
           connect_string = get_connect_string(argc, argv);
           sql_prompt = get_sql_prompt(sql_prompt, spath, connect_string, line, &pstat);
+          free(connect_string);
         }
         else
           sql_prompt = SQL_PROMPT;
@@ -2871,7 +2946,7 @@ int main(int argc, char **argv)
                 xrgs[0] = spath;
                 if (execve(spath, xrgs, enx) < 0) 
                 {
-                  line = malloc(100);
+                  line = malloc(strlen(spath) + 19);
                   sprintf(line, "execve() failure; %s", spath);
                   perror(line);
                   status = -1;
@@ -2984,6 +3059,7 @@ int main(int argc, char **argv)
                       connect_string = build_connect_string(username, password);
                       sql_prompt = 
                         get_sql_prompt(sql_prompt, spath, connect_string, line, &pstat);
+                      free(connect_string);
                     }
                     else if (!check_password_prompt(prompt))
                       add_history(rline);
@@ -3021,6 +3097,7 @@ int main(int argc, char **argv)
                         tokens = str_tokenize(oline,WHITESPACE);
                         connect_string = get_connect_string(2,tokens);
                         free(tokens);
+                        free(connect_string);
                       }
                     }
                     if (!strncmp(lline, DISCONNECT_CMD, 4))
