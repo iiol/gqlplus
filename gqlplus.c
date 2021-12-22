@@ -504,6 +504,8 @@ Copyright (C) 2004 Ljubomir J. Buturovic. All Rights Reserved.
 #define TAIL_PROMPT      ""
 #define SELECT_TABLES_1  "select distinct table_name, owner from all_tables where owner != 'SYS' union "
 #define SELECT_TABLES_2  "select distinct view_name, owner from all_views where owner != 'SYS';\n"
+#define SELECT_USER_TABLES_1  "select distinct table_name, '' as owner from user_tables union "
+#define SELECT_USER_TABLES_2  "select distinct view_name, '' as owner from user_views;\n"
 #define DESCRIBE         "describe"
 #define VI_EDITOR        "/bin/vi"
 #define EDITOR           "_editor"
@@ -2153,7 +2155,7 @@ static int get_pagesize(int fdin, int fdout, char *line)
 
 /*
    Extract table names from 'str', where 'str' is the string
-   representation of the results of SELECT_TABLES query.
+   representation of the results of SELECT_TABLES or SELECT_USER_TABLES query.
 
    If 'complete_columns' is 1, get column names as well.
    */
@@ -2245,18 +2247,25 @@ static struct table *get_names(char *str, int fdin, int fdout, int pagesize, cha
    Get the list of all tables and views for this user. If
    'complete_columns' is 1, get all column names as well.
    */
-static struct table *get_completion_names(int fdin, int fdout, char *line)
+static struct table *get_completion_names(int fdin, int fdout, char *line, int user_tables)
 {
   int  pagesize;
   char *str;
   char *ccmd;
   struct table *tables;
+  char *select1 = SELECT_TABLES_1;
+  char *select2 = SELECT_TABLES_2;
 
   str = (char *) 0;
   tables = (struct table *) 0;
   pagesize = get_pagesize(fdin, fdout, line);
-  ccmd = malloc((strlen(SELECT_TABLES_1)+strlen(SELECT_TABLES_2)+1)*sizeof(char));
-  sprintf(ccmd, "%s%s", SELECT_TABLES_1, SELECT_TABLES_2);
+  if (user_tables)
+  {
+    select1 = SELECT_USER_TABLES_1;
+    select2 = SELECT_USER_TABLES_2;
+  }
+  ccmd = malloc((strlen(select1)+strlen(select2)+1)*sizeof(char));
+  sprintf(ccmd, "%s%s", select1, select2);
   write(fdout, ccmd, strlen(ccmd));
   get_sqlplus(fdin, line, &str);
   /* kehlet: ORA- error is likely because the database isn't open */
@@ -2355,7 +2364,7 @@ static int gqlplus_switch(char **argv, char *sw)
   return carg;
 }
 
-static int install_completion(char *line, int *all_tables)
+static int install_completion(char *line, int *all_tables, int user_tables)
 {
   int completion_names = 0;
 
@@ -2367,7 +2376,7 @@ static int install_completion(char *line, int *all_tables)
     else
       printf("gqlplus: scanning tables...\n");
   }
-  tables = get_completion_names(fds2[0], fds1[1], line);
+  tables = get_completion_names(fds2[0], fds1[1], line, user_tables);
   if (tables)
     completion_names = 1;
   else
@@ -2649,6 +2658,7 @@ int main(int argc, char **argv)
   int    flags;
   int    completion_names = 0;
   int    all_tables = 1; /* set to 0 if we cannot query or parse ALL_TABLES or ALL_VIEWS */
+  int    user_tables_only = 1;
   int    pause_mode;
   int    pstat;
   char   *password = (char *) 0;
@@ -2690,6 +2700,8 @@ int main(int argc, char **argv)
       state = DISCONNECTED;
     if (!strcmp(argv[i], "-V"))
       quit_sqlplus = 1;
+    if (!strcmp(argv[i], "-S"))
+      user_tables_only = 1;
   }
   pause_mode = 0;
   initialize_history("sqlplus");
@@ -2851,7 +2863,7 @@ int main(int argc, char **argv)
                      || ((!sql_prompt && !strcmp(prompt, SQL_PROMPT)) && (completion_names == 0))
                      || ((!sql_prompt && !strcmp(prompt, RECOVER_PROMPT)) && (completion_names == 0)))
                     )
-                  completion_names = install_completion(line, &all_tables);
+                  completion_names = install_completion(line, &all_tables, user_tables_only);
                 /*
                    Read line from user and send it to sqlplus.
                    */
@@ -3009,7 +3021,7 @@ int main(int argc, char **argv)
                             /*
                                In case of CONNECT command, rescan tables.
                                */
-                            completion_names = install_completion(line, &all_tables);
+                            completion_names = install_completion(line, &all_tables, user_tables_only);
                          }
                         }
                       }
