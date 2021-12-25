@@ -17,3 +17,4 @@ tags
 /depcomp
 /install-sh
 /missing
+cov-int
