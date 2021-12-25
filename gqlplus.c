@@ -854,12 +854,14 @@ void install_sigquit_handler()
 // Install signal handlers.
 void sig_init(void)
 {
+  install_sigquit_handler();
+  ignore_sigpipe();
+  ignore_sigint();
+
   if (getenv("EMACS_MODE")){
     printf("Operating in Emacs mode.\nUnset EMACS_MODE if this is not desired.\n");
     install_sigint_handler();
   }
-  install_sigquit_handler();
-  ignore_sigpipe();
 }
 
 static void kill_sqlplus()
